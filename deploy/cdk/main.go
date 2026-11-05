@@ -54,16 +54,7 @@ func main() {
 		log.Fatalf("invalid MAX_REQUEST_NOTE_LENGTH %q: must be between 0 and %d", os.Getenv("MAX_REQUEST_NOTE_LENGTH"), server.MaxRequestNoteLengthCap)
 	}
 
-	licenseStatus := server.LicenseStatus{}
-	if licenseKey := os.Getenv("LICENSE_KEY"); licenseKey != "" {
-		licenseStatus = server.VerifyLicense(licenseKey, logger)
-		if licenseStatus.Valid {
-			logger.Info("license key verified",
-				zap.String("licensee", licenseStatus.Licensee),
-				zap.Time("expires_at", licenseStatus.ExpiresAt),
-			)
-		}
-	}
+	licenseStatus := setupLicense(logger)
 
 	allowedOrigins, err := parseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 	if err != nil {
@@ -92,6 +83,17 @@ func main() {
 		&algnhsa.Options{
 			BinaryContentTypes: []string{"application/octet-stream"},
 		})
+}
+
+func setupLicense(logger *zap.Logger) server.LicenseStatus {
+	status := server.ResolveLicense(os.Getenv("LICENSE_KEY"), logger)
+	if status.Valid {
+		logger.Info("license key verified",
+			zap.String("licensee", status.Licensee),
+			zap.Time("expires_at", status.ExpiresAt),
+		)
+	}
+	return status
 }
 
 // originMatcher matches request origins against an allowlist entry.

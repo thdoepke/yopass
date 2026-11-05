@@ -144,12 +144,16 @@ func validateFlags(license server.LicenseStatus, logger *zap.Logger) error {
 	return nil
 }
 
-// setupLicense verifies --license-key when provided and registers the
-// license expiry gauge on the registry.
+// setupLicense resolves the test override or verifies --license-key and
+// registers the license expiry gauge only outside testing mode.
 func setupLicense(logger *zap.Logger, registry *prometheus.Registry) server.LicenseStatus {
-	licenseStatus := server.LicenseStatus{}
-	if licenseKey := viper.GetString("license-key"); licenseKey != "" {
-		licenseStatus = server.VerifyLicense(licenseKey, logger)
+	licenseKey := viper.GetString("license-key")
+	licenseStatus := server.ResolveLicense(licenseKey, logger)
+	// Testing enables gates without claiming a verified key or an expiry.
+	if licenseStatus.CurrentlyValid() && !licenseStatus.Valid {
+		return licenseStatus
+	}
+	if licenseKey != "" {
 		if licenseStatus.Valid {
 			logger.Info("license key verified",
 				zap.String("licensee", licenseStatus.Licensee),

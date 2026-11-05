@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -17,7 +18,7 @@ import (
 //go:embed license_public.pem
 var licensePublicKeyPEM []byte
 
-// LicenseStatus holds the result of license key verification. Valid is the
+// LicenseStatus holds the result of license setup. Valid is the key
 // verification outcome at startup; long-running servers must call
 // CurrentlyValid instead, which also accounts for the license expiring while
 // the process is running.
@@ -25,15 +26,17 @@ type LicenseStatus struct {
 	Valid     bool
 	ExpiresAt time.Time
 	Licensee  string
+	testOnly  bool // explicit testing override; never a verified key
 }
 
-// CurrentlyValid reports whether the license is valid at this moment: the key
-// verified at startup and its expiry timestamp has not yet passed. Business
+// CurrentlyValid reports whether licensed features are enabled at this moment:
+// testing was explicitly enabled, or the key verified at startup and its expiry
+// timestamp has not yet passed. Business
 // feature gates use this so an expired license degrades the server to
 // non-business behavior without a restart. Verification guarantees ExpiresAt
 // is set whenever Valid is true.
 func (l LicenseStatus) CurrentlyValid() bool {
-	return l.Valid && time.Now().Before(l.ExpiresAt)
+	return l.testOnly || (l.Valid && time.Now().Before(l.ExpiresAt))
 }
 
 // Expired reports whether a license key had its expiry timestamp set but that
@@ -41,7 +44,18 @@ func (l LicenseStatus) CurrentlyValid() bool {
 // features off, security features stay); a zero LicenseStatus (no key
 // provided, or verification failed entirely) is not considered expired.
 func (l LicenseStatus) Expired() bool {
-	return !l.ExpiresAt.IsZero() && !time.Now().Before(l.ExpiresAt)
+	return !l.testOnly && !l.ExpiresAt.IsZero() && !time.Now().Before(l.ExpiresAt)
+}
+
+// ResolveLicense applies the explicit process-level testing override, otherwise
+// verifying the supplied key normally. The override is not a verified license:
+// it carries no licensee or expiry and must never be used in production.
+func ResolveLicense(keyString string, logger *zap.Logger) LicenseStatus {
+	if os.Getenv("YOPASS_TEST_LICENSE_BYPASS") == "true" {
+		logger.Warn("TESTING ONLY: license bypass enabled via YOPASS_TEST_LICENSE_BYPASS=true; not a verified commercial license; do not use in production")
+		return LicenseStatus{testOnly: true}
+	}
+	return VerifyLicense(keyString, logger)
 }
 
 // DaysUntilExpiry returns the number of days until the license expires.

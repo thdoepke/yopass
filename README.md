@@ -78,6 +78,28 @@ Open [http://localhost:1337](http://localhost:1337) and create your first secret
 
 This setup binds Yopass to `127.0.0.1` without TLS and is intended for local testing or use behind a TLS-terminating reverse proxy. See the [quick-start guide](https://yopass.se/docs/quickstart) for Redis and other setup options.
 
+## Testing licensed features in this fork
+
+Build this fork to opt in to **testing-only** runtime access to licensed features:
+
+```console
+YOPASS_TEST_LICENSE_BYPASS=true go run ./cmd/yopass-server \
+  --memcached=localhost:11211 --app-name="Local test" --max-file-size=8MB
+```
+
+Only the exact environment value `true` enables the override. It takes precedence
+over any license key and is resolved at startup by both the server and the
+`deploy/cdk` Lambda adapter (set it in the Lambda environment and deploy this fork).
+Upstream images and binaries do not include this override. Other values or an
+unset variable retain normal license verification; unset it and restart to disable.
+
+This enables license gates, not configuration: OIDC, audit logging, webhooks,
+branding, and larger uploads still need their normal settings. Authentication,
+validation, read-only mode, and explicit feature-disable flags remain enforced.
+Startup logs a testing warning; no verified commercial license, invented expiry,
+or test-mode license-expiry metric/monitor is created. **Do not use this override
+in production.** The upstream LICENSE and attribution are unchanged.
+
 ## Production deployment
 
 Yopass must be served over HTTPS in production so the web application and encrypted payload cannot be modified in transit. The repository includes examples for common deployments:
