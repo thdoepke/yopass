@@ -2,49 +2,83 @@ name: Publish Docker image
 
 # yamllint disable-line rule:truthy
 on:
-  push:
-    branches:
-      - master
-  release:
-    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   push_to_registry:
-    name: Push Docker image to Docker Hub
+    name: Build and publish testing image
+    if: github.repository == 'thdoepke/yopass' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v3
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          go-version-file: go.mod
+      - name: Test backend
+        run: go test -race ./...
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Determine version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-          echo "value=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-          echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v3
-        with:
-          images: jhaals/yopass
-          flavor: |
-            latest=true
+          echo "value=test-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          tags: ghcr.io/thdoepke/yopass:${{ steps.version.outputs.value }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/thdoepke/yopass
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
           build-args: |
             VERSION=${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify published image and testing mode
+        env:
+          IMAGE: ghcr.io/thdoepke/yopass:${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker network create yopass-test
+          trap 'docker rm -f yopass-smoke yopass-test-cache >/dev/null 2>&1 || true; docker network rm yopass-test >/dev/null 2>&1 || true' EXIT
+          docker run -d --name yopass-test-cache --network yopass-test memcached:1.6-alpine
+          docker run -d --name yopass-smoke --network yopass-test \
+            -p 127.0.0.1:1337:1337 \
+            -e YOPASS_TEST_LICENSE_BYPASS=true \
+            "$IMAGE" --memcached=yopass-test-cache:11211 --app-name=Sharesecret-test
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:1337/config > /tmp/yopass-config.json; then
+              break
+            fi
+            sleep 2
+          done
+          python3 - <<'PY'
+          import json
+          with open('/tmp/yopass-config.json') as f:
+              config = json.load(f)
+          assert config['APP_NAME'] == 'Sharesecret-test', config
+          assert config['SECRET_REQUESTS'] is True, config
+          assert config['READ_RECEIPTS'] is True, config
+          PY
+          curl --fail --silent http://127.0.0.1:1337/ > /dev/null
+          docker logs yopass-smoke 2>&1 | grep -F 'TESTING ONLY: license bypass enabled'
+          docker buildx imagetools inspect "$IMAGE"
